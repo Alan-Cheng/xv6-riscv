@@ -25,6 +25,8 @@ char *sys_sbrk(int, int);
 int pause(int);
 int uptime(void);
 int sync(void);
+// Lab: system calls -> https://pdos.csail.mit.edu/6.828/2020/labs/syscall.html
+int trace(int);
 
 // ulib.c
 int stat(const char *, struct stat *);
