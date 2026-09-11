@@ -102,6 +102,21 @@ allocpid()
   return pid;
 }
 
+// 計算非 UNUSED 的 proc
+uint64
+allocproccount(void)
+{
+  uint64 count = 0;
+  for (struct proc *p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED) {
+      count++;
+    }
+    release(&p->lock);
+  }
+  return count;
+}
+
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.

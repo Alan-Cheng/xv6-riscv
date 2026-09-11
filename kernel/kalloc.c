@@ -80,3 +80,20 @@ kalloc(void)
     memset((char *)r, 5, PGSIZE); // fill with junk
   return (void *)r;
 }
+
+// 計算目前可用的記憶體大小，單位為 byte
+uint64 
+kmemunused(void)
+{
+  struct run *r;
+  uint64 unusedmem = 0;
+
+  acquire(&kmem.lock);
+  r = kmem.freelist;
+  while (r) {
+    unusedmem += PGSIZE;
+    r = r->next;
+  }
+  release(&kmem.lock);
+  return unusedmem;
+}
