@@ -59,6 +59,23 @@ sys_wait(void)
   return kwait(p);
 }
 
+// Observe the old break without allocating any page-table pages.
+static void
+sbrk_pte_debug(char *phase, uint64 addr)
+{
+  struct proc *p = myproc();
+  pte_t *pte = addr < MAXVA ? walk(p->pagetable, addr, 0) : 0;
+
+  if (pte == 0) {
+    printk("sbrk %s: pid=%d sz=%lx va=%lx PTE unavailable\n",
+           phase, p->pid, p->sz, addr);
+  } else {
+    printk("sbrk %s: pid=%d sz=%lx va=%lx pte=%lx flags=%lx valid=%d\n",
+           phase, p->pid, p->sz, addr, *pte, PTE_FLAGS(*pte),
+           (*pte & PTE_V) != 0);
+  }
+}
+
 uint64
 sys_sbrk(void)
 {
@@ -69,6 +86,10 @@ sys_sbrk(void)
   argint(0, &n);
   argint(1, &t);
   addr = myproc()->sz;
+
+  // Limit this exercise's output to one-byte growth requests.
+  if (n == 1)
+    sbrk_pte_debug("before", addr);
 
   if (t == SBRK_EAGER || n < 0) {
     if (growproc(n) < 0) {
@@ -84,6 +105,8 @@ sys_sbrk(void)
       return -1;
     myproc()->sz += n;
   }
+  if (n == 1)
+    sbrk_pte_debug("after", addr);
   return addr;
 }
 
