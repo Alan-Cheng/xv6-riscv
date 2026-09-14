@@ -16,6 +16,13 @@ main()
     printk("\n");
     printk("xv6 kernel is booting\n");
     printk("\n");
+    // Read the DTB before kinit() can recycle the memory containing it.
+    uint64 memory_bytes;
+    if (fdt_memory_size(boot_dtb, &memory_bytes) == 0)
+      printk("physical memory: %lu bytes (%lu MiB)\n", memory_bytes,
+             memory_bytes / (1024 * 1024));
+    else
+      printk("physical memory: unable to parse DTB\n");
     kinit();            // physical page allocator
     kvminit();          // create kernel page table
     kvminithart();      // turn on paging

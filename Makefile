@@ -4,6 +4,7 @@ U=user
 OBJS = \
   $K/entry.o \
   $K/start.o \
+  $K/fdt.o \
   $K/console.o \
   $K/printk.o \
   $K/uart.o \

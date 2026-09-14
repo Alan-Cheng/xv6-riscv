@@ -186,3 +186,7 @@ void            virtio_disk_intr(void);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x) / sizeof((x)[0]))
+
+// fdt.c / start.c
+extern uint64 boot_dtb;
+int fdt_memory_size(uint64, uint64*);
