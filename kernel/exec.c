@@ -9,6 +9,14 @@
 
 static int loadseg(pde_t *, uint64, struct inode *, uint, uint);
 
+// Bound interpreter chains, including scripts that name themselves.
+#define MAXINTERP 4
+struct scriptargs {
+  char line[MAXINTERP][MAXPATH];
+  char path[MAXINTERP][MAXPATH];
+  char *argv[MAXARG];
+};
+
 // map ELF permissions to PTE permission bits.
 int
 flags2perm(int flags)
@@ -35,18 +43,88 @@ kexec(char *path, char **argv)
   struct proghdr ph;
   pagetable_t pagetable = 0, oldpagetable;
   struct proc *p = myproc();
+  struct scriptargs *script = 0;
+  int depth = 0;
 
+again:
   begin_op();
 
   // Open the executable file.
   if ((ip = namei(path)) == 0) {
     end_op();
-    return -1;
+    goto bad;
   }
   ilock(ip);
 
-  // Read the ELF header.
-  if (readi(ip, 0, (uint64)&elf, 0, sizeof(elf)) != sizeof(elf))
+  // Check for #! before requiring a complete ELF header: scripts can be tiny.
+  int n = readi(ip, 0, (uint64)&elf, 0, sizeof(elf));
+  if (n >= 2 && ((char *)&elf)[0] == '#' && ((char *)&elf)[1] == '!') {
+    if (depth == MAXINTERP)
+      goto bad;
+    if (script == 0) {
+      script = (struct scriptargs *)kalloc();
+      if (script == 0)
+        goto bad;
+    }
+    char *line = script->line[depth];
+    n = readi(ip, 0, (uint64)line, 0, MAXPATH);
+    if (n < 2)
+      goto bad;
+    for (i = 2; i < n && line[i] != '\n'; i++) {
+      if (line[i] == 0)
+        goto bad;
+    }
+    if (i == MAXPATH)
+      goto bad; // Do not silently truncate an interpreter line.
+    line[i] = 0;
+
+    char *interp = line + 2;
+    while (*interp == ' ' || *interp == '\t')
+      interp++;
+    s = interp;
+    while (*s && *s != ' ' && *s != '\t')
+      s++;
+    char *option = s;
+    if (*s) {
+      *s++ = 0;
+      while (*s == ' ' || *s == '\t')
+        s++;
+      option = s;
+      while (*s)
+        s++;
+      while (s > option && (s[-1] == ' ' || s[-1] == '\t'))
+        *--s = 0;
+    }
+    if (*interp == 0)
+      goto bad;
+
+    // argv becomes: interpreter, optional argument, script path, argv[1...].
+    // Preserve strings until they have been copied onto the new user stack.
+    int count = 0;
+    while (count < MAXARG && argv[count])
+      count++;
+    int skip = count > 0 ? 1 : 0;
+    int prefix = *option ? 3 : 2;
+    if (prefix + count - skip >= MAXARG || strlen(path) >= MAXPATH)
+      goto bad;
+    safestrcpy(script->path[depth], path, MAXPATH);
+    for (i = count - 1; i >= skip; i--)
+      script->argv[prefix + i - skip] = argv[i];
+    script->argv[prefix + count - skip] = 0;
+    script->argv[0] = interp;
+    if (*option)
+      script->argv[1] = option;
+    script->argv[prefix - 1] = script->path[depth];
+    argv = script->argv;
+    path = interp;
+    depth++;
+    // Release the script before opening its interpreter (which may be itself).
+    iunlockput(ip);
+    end_op();
+    ip = 0;
+    goto again;
+  }
+  if (n != sizeof(elf))
     goto bad;
 
   // Is this really an ELF file?
@@ -136,6 +214,8 @@ kexec(char *path, char **argv)
   p->trapframe->epc = elf.entry; // initial program counter = ulib.c:start()
   p->trapframe->sp = sp;         // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
+  if (script)
+    kfree((void *)script);
 
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
@@ -146,6 +226,8 @@ bad:
     iunlockput(ip);
     end_op();
   }
+  if (script)
+    kfree((void *)script);
   return -1;
 }
 
