@@ -17,6 +17,9 @@ extern char etext[]; // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
+static pte_t *walklevel(pagetable_t, uint64, int, int);
+static int mapsuperpage(pagetable_t, uint64, uint64, int);
+
 // Make a direct-map page table for the kernel.
 pagetable_t
 kvmmake(void)
@@ -58,8 +61,25 @@ kvmmake(void)
 void
 kvmmap(pagetable_t kpgtbl, uint64 va, uint64 pa, uint64 sz, int perm)
 {
-  if (mappages(kpgtbl, va, sz, pa, perm) != 0)
-    panic("kvmmap");
+  if (sz == 0 || va % PGSIZE || pa % PGSIZE || sz % PGSIZE)
+    panic("kvmmap: alignment or size");
+
+  // Keep small pages at range/permission boundaries. Never round a mapping
+  // outward: that could expose a guard page or cross the end of kernel text.
+  while (sz > 0) {
+    uint64 step = PGSIZE;
+    if (va % SUPERPGSIZE == 0 && pa % SUPERPGSIZE == 0 &&
+        sz >= SUPERPGSIZE) {
+      if (mapsuperpage(kpgtbl, va, pa, perm) != 0)
+        panic("kvmmap");
+      step = SUPERPGSIZE;
+    } else if (mappages(kpgtbl, va, PGSIZE, pa, perm) != 0) {
+      panic("kvmmap");
+    }
+    va += step;
+    pa += step;
+    sz -= step;
+  }
 }
 
 // Initialize the kernel_pagetable, shared by all CPUs.
@@ -95,15 +115,22 @@ kvminithart()
 //   21..29 -- 9 bits of level-1 index.
 //   12..20 -- 9 bits of level-0 index.
 //    0..11 -- 12 bits of byte offset within the page.
-pte_t *
-walk(pagetable_t pagetable, uint64 va, int alloc)
+// Stop at target (0 for 4 KiB, 1 for 2 MiB). An existing leaf above
+// target cannot be traversed as a page table; splitting it is not supported.
+static pte_t *
+walklevel(pagetable_t pagetable, uint64 va, int alloc, int target)
 {
   if (va >= MAXVA)
     panic("walk");
 
-  for (int level = 2; level > 0; level--) {
+  // 從 level 2 開始，依序往下找到指定的 target 層
+  for (int level = 2; level > target; level--) {
+    // 取出第 level 層的 page table index
     pte_t *pte = &pagetable[PX(level, va)];
+    // 檢查該 pte 是否有效，如果有效，則取得下一層的 page table
     if (*pte & PTE_V) {
+      if (*pte & (PTE_R | PTE_W | PTE_X))
+        return 0;
       pagetable = (pagetable_t)PTE2PA(*pte);
     } else {
       if (!alloc || (pagetable = (pde_t *)kalloc()) == 0)
@@ -112,7 +139,14 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
       *pte = PA2PTE(pagetable) | PTE_V;
     }
   }
-  return &pagetable[PX(0, va)];
+  return &pagetable[PX(target, va)];
+}
+
+// User mappings still use level-0 leaves only.
+pte_t *
+walk(pagetable_t pagetable, uint64 va, int alloc)
+{
+  return walklevel(pagetable, va, alloc, 0);
 }
 
 // Look up a virtual address, return the physical address,
@@ -171,6 +205,23 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
     a += PGSIZE;
     pa += PGSIZE;
   }
+  return 0;
+}
+
+// Map one 2 MiB page using a level-1 leaf. Both addresses must be
+// superpage-aligned. Return -1 if walklevel() cannot obtain the PTE.
+static int
+mapsuperpage(pagetable_t pagetable, uint64 va, uint64 pa, int perm)
+{
+  pte_t *pte;
+
+  if (va % SUPERPGSIZE || pa % SUPERPGSIZE)
+    panic("mapsuperpage: not aligned");
+  if ((pte = walklevel(pagetable, va, 1, 1)) == 0)
+    return -1;
+  if (*pte & PTE_V)
+    panic("mapsuperpage: remap");
+  *pte = PA2PTE(pa) | perm | PTE_V;
   return 0;
 }
 

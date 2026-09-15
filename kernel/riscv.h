@@ -387,11 +387,19 @@ typedef uint64 *pagetable_t; // 512 PTEs
 #endif // __ASSEMBLER__
 
 #define PGSIZE  4096 // bytes per page
+#define SUPERPGSIZE (1L << 21) // bytes mapped by a level-1 leaf
 #define PGSHIFT 12   // bits of offset within a page
 
 #define PGROUNDUP(sz)  (((sz) + PGSIZE - 1) & ~(PGSIZE - 1))
 #define PGROUNDDOWN(a) (((a)) & ~(PGSIZE - 1))
 
+
+// 1L << 0 = 00000001 = 1
+// 1L << 1 = 00000010 = 2
+// 1L << 2 = 00000100 = 4
+// 1L << 3 = 00001000 = 8
+// 1L << 4 = 00010000 = 16
+// Valid, Readable, Writable, Executable, User
 #define PTE_V (1L << 0) // valid
 #define PTE_R (1L << 1)
 #define PTE_W (1L << 2)
@@ -399,6 +407,18 @@ typedef uint64 *pagetable_t; // 512 PTEs
 #define PTE_U (1L << 4) // user can access
 
 // shift a physical address to the right place for a PTE.
+// PA：
+//                          offset
+// ┌────────────────────┬────────────┐
+// │       PPN          │  12 bits   │
+// └────────────────────┴────────────┘
+
+// PTE
+// ┌────────────────────┬──────────┐
+// │        PPN         │ 10 bits  │
+// └────────────────────┴──────────┘
+//                          flags
+// 下面用做 PA <-> PTE 的轉換
 #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)
 
 #define PTE2PA(pte) (((pte) >> 10) << 12)
@@ -406,8 +426,9 @@ typedef uint64 *pagetable_t; // 512 PTEs
 #define PTE_FLAGS(pte) ((pte) & 0x3FF)
 
 // extract the three 9-bit page table indices from a virtual address.
-#define PXMASK         0x1FF // 9 bits
+#define PXMASK         0x1FF // 9 bits (0001 1111 1111)
 #define PXSHIFT(level) (PGSHIFT + (9 * (level)))
+// 會將虛擬位址的第 level 層的 page table index 取出來
 #define PX(level, va)  ((((uint64)(va)) >> PXSHIFT(level)) & PXMASK)
 
 // one beyond the highest possible virtual address.
