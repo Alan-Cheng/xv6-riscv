@@ -21,12 +21,15 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+} kmem[NCPU];
+
+#define STEAL_BATCH 32
 
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
+  for (int i = 0; i < NCPU; i++)
+    initlock(&kmem[i].lock, "kmem");
   freerange(end, (void *)PHYSTOP);
 }
 
@@ -56,10 +59,13 @@ kfree(void *pa)
 
   r = (struct run *)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  push_off();
+  int id = cpuid();
+  acquire(&kmem[id].lock);
+  r->next = kmem[id].freelist;
+  kmem[id].freelist = r;
+  release(&kmem[id].lock);
+  pop_off();
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -70,11 +76,40 @@ kalloc(void)
 {
   struct run *r;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
+  // Keep the CPU id stable until all local-list operations are done.
+  push_off();
+  int id = cpuid();
+  acquire(&kmem[id].lock);
+  r = kmem[id].freelist;
   if (r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+    kmem[id].freelist = r->next;
+  release(&kmem[id].lock);
+
+  // Detach a bounded batch from a donor, holding only one lock at a time.
+  for (int offset = 1; r == 0 && offset < NCPU; offset++) {
+    int donor = (id + offset) % NCPU;
+    acquire(&kmem[donor].lock);
+    r = kmem[donor].freelist;
+    if (r) {
+      struct run *last = r;
+      for (int n = 1; n < STEAL_BATCH && last->next; n++)
+        last = last->next;
+      kmem[donor].freelist = last->next;
+      last->next = 0;
+      release(&kmem[donor].lock);
+
+      // Return the first page and cache the remainder locally.
+      if (last != r) {
+        acquire(&kmem[id].lock);
+        last->next = kmem[id].freelist;
+        kmem[id].freelist = r->next;
+        release(&kmem[id].lock);
+      }
+    } else {
+      release(&kmem[donor].lock);
+    }
+  }
+  pop_off();
 
   if (r)
     memset((char *)r, 5, PGSIZE); // fill with junk
@@ -88,12 +123,15 @@ kmemunused(void)
   struct run *r;
   uint64 unusedmem = 0;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  while (r) {
-    unusedmem += PGSIZE;
-    r = r->next;
+  // Each list is consistent; concurrent allocations can change the total.
+  for (int i = 0; i < NCPU; i++) {
+    acquire(&kmem[i].lock);
+    r = kmem[i].freelist;
+    while (r) {
+      unusedmem += PGSIZE;
+      r = r->next;
+    }
+    release(&kmem[i].lock);
   }
-  release(&kmem.lock);
   return unusedmem;
 }
